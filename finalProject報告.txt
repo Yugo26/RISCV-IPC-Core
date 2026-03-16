@@ -1,0 +1,32 @@
+1. 專案摘要 
+本專案旨在於 RISC-V 架構下，實作一個具備搶佔式多工能力的微核心，並重點深化行程間通訊機制的穩定性與功能性。
+不同於基礎的信號量 (Semaphore) 實作，本專案完成了 RTOS 的通訊機制：
+互斥鎖 (Mutex)：支援遞迴上鎖 (Recursive Locking) 與擁有權檢查 (Ownership)。
+訊息佇列 (Message Queue)：基於環形緩衝區 (Ring Buffer) 的資料傳輸，支援動態記憶體配置。
+事件標誌組 (Event Group)：支援複雜邏輯等待 (AND/OR)、廣播喚醒，並解決了虛假喚醒 (Spurious Wakeup) 問題。
+2. 核心實作內容
+A. 互斥鎖 (Mutex)
+從傳統的 Semaphore 機制進化，實作了具備 擁有權 (Ownership) 與 遞迴 (Recursive) 特性的 Mutex。
+資料結構設計：在 MutexCB 中新增 owner (紀錄持有者) 與 lockCount (遞迴計數)。
+遞迴鎖 (Recursive Locking)：允許同一個 Task 多次獲取同一把鎖，避免自我死鎖 (Self-Deadlock)。
+安全性機制：
+擁有權檢查：在 release 時檢查是否為鎖的持有者，防止非法解鎖。
+Ghost Wakeup 防禦：在 take 醒來後，再次確認鎖的狀態與擁有權，防止因超時或其他因素導致的 Lock Stealing 或狀態不一致。
+系統呼叫整合：將 Kernel 端的 mut_take/release 封裝為 System Call，讓 User Mode 程式能透過 ecall 安全地存取 Kernel 資源。
+B. 訊息佇列 (Message Queue)
+實作了生產者-消費者 (Producer-Consumer) 模型：
+Circular Buffer：利用 head 與 tail 指標管理佇列，有效利用記憶體空間。
+資料隔離：使用 memcpy 進行資料搬運。User 傳入的是資料副本，而非直接操作 Kernel 內部的指標，確保 Kernel 記憶體的安全性。
+Two-way Blocking：
+Full：生產者寫入時若佇列已滿，進入 sendWaitList 等待。
+Empty：消費者讀取時若佇列為空，進入 recvWaitList 等待。
+C.  事件標誌 (Event Group) 
+這是本專案邏輯最複雜的部分，用於多個 Task 間的同步：
+邏輯等待：支援 EVENT_WAIT_AND (所有條件滿足) 與 EVENT_WAIT_OR (任一條件滿足) 兩種模式。
+自動清除 (Auto Clear)：支援在條件滿足並喚醒 Task 後，原子性地清除旗標。
+廣播機制：當事件發生時，Kernel 會掃描整條等待清單，喚醒所有符合條件的 Task，而非只喚醒第一個。
+3. 遇到的挑戰與解決方案
+挑戰：在實作 Mutex 時，發現 Task 因 Timeout 醒來後沒有從等待清單移除，導致系統崩潰。
+解決：在 mut_take 的超時處理路徑中，加入 list_remove 並增加狀態檢查。
+挑戰：User Task 與 Kernel Task 的資料傳遞問題。
+解決：理解 RISC-V 暫存器傳參規則，利用陣列打包與指標轉型，成功實現多參數的 System Call。
